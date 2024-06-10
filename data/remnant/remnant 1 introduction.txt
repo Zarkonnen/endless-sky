@@ -1727,6 +1727,8 @@ mission "Remnant: Heavy Laser Hint"
 	outfitter
 	source
 		outfits "Heavy Laser"
+	to offer
+		has "Remnant: Tech Retrieval: active"
 	on offer
 		conversation
 			`As you walk into the outfitter, you notice that they sell Heavy Lasers, an advanced weapon technology made by the Deep. Maybe the Remnant would be interested in those?`
