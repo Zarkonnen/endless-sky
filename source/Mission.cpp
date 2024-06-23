@@ -24,6 +24,7 @@ this program. If not, see <https://www.gnu.org/licenses/>.
 #include "Government.h"
 #include "Logger.h"
 #include "Messages.h"
+#include "Phrase.h"
 #include "Planet.h"
 #include "PlayerInfo.h"
 #include "Random.h"
@@ -361,8 +362,8 @@ void Mission::Save(DataWriter &out, const string &tag) const
 			out.Write("passengers", passengers);
 		if(paymentApparent)
 			out.Write("apparent payment", paymentApparent);
-		if(illegalCargoFine)
-			out.Write("illegal", illegalCargoFine, illegalCargoMessage);
+		if(fine)
+			out.Write("illegal", fine, fineMessage);
 		if(failIfDiscovered)
 			out.Write("stealth");
 		if(!isVisible)
@@ -690,16 +691,16 @@ int Mission::CargoSize() const
 
 
 
-int Mission::IllegalCargoFine() const
+int Mission::Fine() const
 {
-	return illegalCargoFine;
+	return fine;
 }
 
 
 
-string Mission::IllegalCargoMessage() const
+string Mission::FineMessage() const
 {
-	return illegalCargoMessage;
+	return fineMessage;
 }
 
 
@@ -1006,6 +1007,10 @@ string Mission::BlockedMessage(const PlayerInfo &player)
 		out << "no additional space";
 	subs["<capacity>"] = out.str();
 
+	for(const auto &keyValue : subs)
+		subs[keyValue.first] = Phrase::ExpandPhrases(keyValue.second);
+	Format::Expand(subs);
+
 	string message = Format::Replace(blocked, subs);
 	blocked.clear();
 	return message;
@@ -1191,8 +1196,7 @@ void Mission::Do(const ShipEvent &event, PlayerInfo &player, UI *ui)
 	if(event.TargetGovernment()->IsPlayer() && !hasFailed)
 	{
 		bool failed = false;
-		string message = "Your " + event.Target()->DisplayModelName() +
-			" \"" + event.Target()->Name() + "\" has been ";
+		string message;
 		if(event.Type() & ShipEvent::DESTROY)
 		{
 			// Destroyed ships carrying mission cargo result in failed missions.
@@ -1202,8 +1206,6 @@ void Mission::Do(const ShipEvent &event, PlayerInfo &player, UI *ui)
 			// If any mission passengers were present, this mission is failed.
 			for(const auto &it : event.Target()->Cargo().PassengerList())
 				failed |= (it.first == this && it.second);
-			if(failed)
-				message += "destroyed. ";
 		}
 		else if(event.Type() & ShipEvent::BOARD)
 		{
@@ -1211,7 +1213,8 @@ void Mission::Do(const ShipEvent &event, PlayerInfo &player, UI *ui)
 			for(const auto &it : event.Actor()->Cargo().MissionCargo())
 				failed |= (it.first == this);
 			if(failed)
-				message += "plundered. ";
+				message = "Your " + event.Target()->DisplayModelName() +
+					" \"" + event.Target()->Name() + "\" has been plundered. ";
 		}
 
 		if(failed)
@@ -1390,8 +1393,8 @@ Mission Mission::Instantiate(const PlayerInfo &player, const shared_ptr<Ship> &b
 			result.passengers = passengers;
 	}
 	result.paymentApparent = paymentApparent;
-	result.illegalCargoFine = illegalCargoFine;
-	result.illegalCargoMessage = Phrase::ExpandPhrases(illegalCargoMessage);
+	result.fine = fine;
+	result.fineMessage = Phrase::ExpandPhrases(fineMessage);
 	result.failIfDiscovered = failIfDiscovered;
 
 	result.distanceCalcSettings = distanceCalcSettings;
@@ -1472,6 +1475,11 @@ Mission Mission::Instantiate(const PlayerInfo &player, const shared_ptr<Ship> &b
 	if(!result.markedSystems.empty())
 		subs["<marks>"] = systemsReplacement(result.markedSystems);
 
+	// Done making subs, so expand the phrases and recursively substitute.
+	for(const auto &keyValue : subs)
+		subs[keyValue.first] = Phrase::ExpandPhrases(keyValue.second);
+	Format::Expand(subs);
+
 	// Instantiate the NPCs. This also fills in the "<npc>" substitution.
 	string reason;
 	for(auto &&n : npcs)
@@ -1483,7 +1491,8 @@ Mission Mission::Instantiate(const PlayerInfo &player, const shared_ptr<Ship> &b
 		return result;
 	}
 	for(const NPC &npc : npcs)
-		result.npcs.push_back(npc.Instantiate(subs, sourceSystem, result.destination->GetSystem(), jumps, payload));
+		result.npcs.push_back(npc.Instantiate(player.Conditions(), subs,
+			sourceSystem, result.destination->GetSystem(), jumps, payload));
 
 	// Instantiate the actions. The "complete" action is always first so that
 	// the "<payment>" substitution can be filled in.
@@ -1501,7 +1510,7 @@ Mission Mission::Instantiate(const PlayerInfo &player, const shared_ptr<Ship> &b
 		return result;
 	}
 	for(const auto &it : actions)
-		result.actions[it.first] = it.second.Instantiate(subs, sourceSystem, jumps, payload);
+		result.actions[it.first] = it.second.Instantiate(player.Conditions(), subs, sourceSystem, jumps, payload);
 
 	auto oit = onEnter.begin();
 	for( ; oit != onEnter.end(); ++oit)
@@ -1517,7 +1526,7 @@ Mission Mission::Instantiate(const PlayerInfo &player, const shared_ptr<Ship> &b
 		return result;
 	}
 	for(const auto &it : onEnter)
-		result.onEnter[it.first] = it.second.Instantiate(subs, sourceSystem, jumps, payload);
+		result.onEnter[it.first] = it.second.Instantiate(player.Conditions(), subs, sourceSystem, jumps, payload);
 
 	auto eit = genericOnEnter.begin();
 	for( ; eit != genericOnEnter.end(); ++eit)
@@ -1533,7 +1542,8 @@ Mission Mission::Instantiate(const PlayerInfo &player, const shared_ptr<Ship> &b
 		return result;
 	}
 	for(const MissionAction &action : genericOnEnter)
-		result.genericOnEnter.emplace_back(action.Instantiate(subs, sourceSystem, jumps, payload));
+		result.genericOnEnter.emplace_back(action.Instantiate(
+			player.Conditions(), subs, sourceSystem, jumps, payload));
 
 	// Perform substitution in the name and description.
 	result.displayName = Format::Replace(Phrase::ExpandPhrases(displayName), subs);
@@ -1631,11 +1641,11 @@ bool Mission::Enter(const System *system, PlayerInfo &player, UI *ui)
 bool Mission::ParseContraband(const DataNode &node)
 {
 	if(node.Token(0) == "illegal" && node.Size() == 2)
-		illegalCargoFine = node.Value(1);
+		fine = node.Value(1);
 	else if(node.Token(0) == "illegal" && node.Size() == 3)
 	{
-		illegalCargoFine = node.Value(1);
-		illegalCargoMessage = node.Token(2);
+		fine = node.Value(1);
+		fineMessage = node.Token(2);
 	}
 	else if(node.Token(0) == "stealth")
 		failIfDiscovered = true;
